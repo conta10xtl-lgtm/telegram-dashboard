@@ -7,12 +7,36 @@ from google.oauth2 import service_account
 DB_PATH = os.getenv("DB_PATH", "drive_telebot.db")
 st.set_page_config(page_title="Drive ↔ Telegram Bot • Dashboard", layout="wide")
 
+# ---------- DB helpers ----------
+CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS alias (
+  code TEXT PRIMARY KEY,
+  drive_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cache (
+  drive_id TEXT PRIMARY KEY,
+  name TEXT,
+  md5 TEXT,
+  size INTEGER,
+  modified INTEGER,
+  tg_file_id TEXT
+);
+"""
+
 def conn():
     c = sqlite3.connect(DB_PATH)
     c.row_factory = sqlite3.Row
     return c
 
+def ensure_schema():
+    with conn() as c:
+        for stmt in CREATE_SQL.strip().split(";"):
+            s = stmt.strip()
+            if s:
+                c.execute(s)
+
 def get_counts():
+    ensure_schema()
     with conn() as c:
         n_alias = c.execute("SELECT COUNT(*) FROM alias").fetchone()[0]
         n_cache = c.execute("SELECT COUNT(*) FROM cache").fetchone()[0]
@@ -20,6 +44,7 @@ def get_counts():
     return n_alias, n_cache, n_cached_tg
 
 def table_alias():
+    ensure_schema()
     with conn() as c:
         rows = c.execute("""
             SELECT a.code, a.drive_id, IFNULL(cache.name,'?') AS name, cache.tg_file_id
@@ -29,6 +54,7 @@ def table_alias():
     return rows
 
 def table_cache():
+    ensure_schema()
     with conn() as c:
         rows = c.execute("""
             SELECT drive_id, name, size, modified, 
@@ -38,12 +64,14 @@ def table_cache():
     return rows
 
 def local_search(term):
+    ensure_schema()
     with conn() as c:
         rows = c.execute("SELECT drive_id, name FROM cache").fetchall()
     scored = [(fuzz.WRatio(term, r["name"]), r["drive_id"], r["name"]) for r in rows]
     scored.sort(reverse=True)
     return scored[:10]
 
+# ---------- Google Drive ----------
 def build_drive():
     cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     if not cred_path:
@@ -57,7 +85,6 @@ def drive_query(term, page_size=10):
     drv = build_drive()
     if drv is None:
         return []
-    # Corrigido: evita erro de aspas no f-string
     safe_term = (term or "").replace("'", " ")
     q = f"name contains '{safe_term}' and mimeType='application/pdf' and trashed=false"
     res = drv.files().list(
@@ -68,11 +95,15 @@ def drive_query(term, page_size=10):
     ).execute()
     return res.get("files", [])
 
-# ---- INTERFACE ----
+# ---------- UI ----------
 st.title("📄 Drive → 🤖 Telegram • Dashboard")
 
-col1, col2, col3 = st.columns(3)
+# Mostra aviso se o DB estiver vazio
 n_alias, n_cache, n_cached_tg = get_counts()
+if n_cache == 0 and n_alias == 0:
+    st.info("Banco inicializado vazio. Quando o bot rodar e popular o SQLite, os números aparecerão aqui.")
+
+col1, col2, col3 = st.columns(3)
 col1.metric("Aliases", n_alias)
 col2.metric("Cache (arquivos)", n_cache)
 col3.metric("Instantâneos (tg_file_id)", n_cached_tg)
@@ -98,7 +129,7 @@ if term:
             st.write("**Resultados no Google Drive:**")
             files = drive_query(term)
             if not files:
-                st.info("Nenhum resultado encontrado no Drive.")
+                st.info("Nenhum resultado encontrado no Drive (confira as credenciais em *Secrets*).")
             for f in files:
                 st.write(f"• {f['name']}  \nID: `{f['id']}`  \n[Ver no Drive]({f['webViewLink']})")
 
