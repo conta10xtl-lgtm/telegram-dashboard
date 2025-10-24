@@ -57,10 +57,14 @@ def drive_query(term, page_size=10):
     drv = build_drive()
     if drv is None:
         return []
-    q = f"name contains '{term.replace(\"'\",\" \")}' and mimeType='application/pdf' and trashed=false"
+    # Corrigido: evita erro de aspas no f-string
+    safe_term = (term or "").replace("'", " ")
+    q = f"name contains '{safe_term}' and mimeType='application/pdf' and trashed=false"
     res = drv.files().list(
-        q=q, fields="files(id,name,webViewLink,webContentLink,modifiedTime,size)",
-        pageSize=page_size, orderBy="modifiedTime desc"
+        q=q,
+        fields="files(id,name,webViewLink,webContentLink,modifiedTime,size)",
+        pageSize=page_size,
+        orderBy="modifiedTime desc"
     ).execute()
     return res.get("files", [])
 
